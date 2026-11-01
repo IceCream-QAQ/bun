@@ -634,3 +634,34 @@ describe("zlib.zstd", () => {
     expect(all.length).toBeGreaterThanOrEqual(7);
   }, 15_000);
 });
+
+// Fixture from oven-sh/bun#46392: a block switch with only one block type.
+describe("Brotli invalid block switch (CVE-2026-111497)", () => {
+  const invalid = Buffer.from("200010414141fcffff07002228f00b60f7f41f000000", "hex");
+  const error = { code: "ERR_BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH", errno: -17 };
+
+  it("exports the decoder error and rejects synchronous decompression", () => {
+    expect(zlib.constants.BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH).toBe(-17);
+    expect(() => zlib.brotliDecompressSync(invalid)).toThrow(expect.objectContaining(error));
+  });
+
+  it("rejects asynchronous decompression", async () => {
+    await expect(util.promisify(zlib.brotliDecompress)(invalid)).rejects.toMatchObject(error);
+  });
+
+  it("rejects byte-by-byte streaming decompression", async () => {
+    const decoder = zlib.createBrotliDecompress();
+    try {
+      const result = new Promise((resolve, reject) => {
+        decoder.once("error", resolve);
+        decoder.once("end", () => reject(new Error("invalid Brotli stream was accepted")));
+      });
+      decoder.resume();
+      for (let i = 0; i < invalid.length; i++) decoder.write(invalid.subarray(i, i + 1));
+      decoder.end();
+      expect(await result).toMatchObject(error);
+    } finally {
+      decoder.destroy();
+    }
+  });
+});

@@ -1085,6 +1085,7 @@ static JSValue processBindingConstantsGetZlib(VM& vm, JSObject* bindingObject)
     object->putDirect(vm, PropertyName(Identifier::fromString(vm, "BROTLI_DECODER_ERROR_FORMAT_PADDING_1"_s)), jsNumber(BROTLI_DECODER_ERROR_FORMAT_PADDING_1));
     object->putDirect(vm, PropertyName(Identifier::fromString(vm, "BROTLI_DECODER_ERROR_FORMAT_PADDING_2"_s)), jsNumber(BROTLI_DECODER_ERROR_FORMAT_PADDING_2));
     object->putDirect(vm, PropertyName(Identifier::fromString(vm, "BROTLI_DECODER_ERROR_FORMAT_DISTANCE"_s)), jsNumber(BROTLI_DECODER_ERROR_FORMAT_DISTANCE));
+    object->putDirect(vm, PropertyName(Identifier::fromString(vm, "BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH"_s)), jsNumber(BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH));
     object->putDirect(vm, PropertyName(Identifier::fromString(vm, "BROTLI_DECODER_ERROR_DICTIONARY_NOT_SET"_s)), jsNumber(BROTLI_DECODER_ERROR_DICTIONARY_NOT_SET));
     object->putDirect(vm, PropertyName(Identifier::fromString(vm, "BROTLI_DECODER_ERROR_INVALID_ARGUMENTS"_s)), jsNumber(BROTLI_DECODER_ERROR_INVALID_ARGUMENTS));
     object->putDirect(vm, PropertyName(Identifier::fromString(vm, "BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES"_s)), jsNumber(BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES));

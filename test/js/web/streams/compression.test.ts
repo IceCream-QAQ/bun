@@ -249,3 +249,9 @@ describe("CompressionStream and DecompressionStream", () => {
     });
   });
 });
+
+test("DecompressionStream rejects a Brotli invalid block switch (CVE-2026-111497)", async () => {
+  const invalid = Buffer.from("200010414141fcffff07002228f00b60f7f41f000000", "hex");
+  const decoded = new Blob([invalid]).stream().pipeThrough(new DecompressionStream("brotli"));
+  await expect(new Response(decoded).arrayBuffer()).rejects.toThrow();
+});

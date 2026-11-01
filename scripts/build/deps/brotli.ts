@@ -10,21 +10,20 @@
 
 import type { Dependency, DirectBuild } from "../source.ts";
 
-// Upstream brotli pins releases by tag, not commit. A retag would change
-// what we fetch — if that ever matters, resolve the tag to a sha and pin that.
-const BROTLI_COMMIT = "v1.1.0";
+// v1.2.1 fixes CVE-2026-111497. Pin the release commit for reproducible builds.
+const BROTLI_COMMIT = "db24a98aed38a16de78cc05ca15cdd8dc2a0d92d";
 
 // prettier-ignore
 const SOURCES = [
   "common/constants", "common/context", "common/dictionary", "common/platform",
   "common/shared_dictionary", "common/transform",
-  "dec/bit_reader", "dec/decode", "dec/huffman", "dec/state",
+  "dec/bit_reader", "dec/decode", "dec/huffman", "dec/prefix", "dec/state", "dec/static_init",
   "enc/backward_references", "enc/backward_references_hq", "enc/bit_cost",
   "enc/block_splitter", "enc/brotli_bit_stream", "enc/cluster", "enc/command",
   "enc/compound_dictionary", "enc/compress_fragment", "enc/compress_fragment_two_pass",
   "enc/dictionary_hash", "enc/encode", "enc/encoder_dict", "enc/entropy_encode",
   "enc/fast_log", "enc/histogram", "enc/literal_cost", "enc/memory",
-  "enc/metablock", "enc/static_dict", "enc/utf8_util",
+  "enc/metablock", "enc/static_dict", "enc/static_dict_lut", "enc/static_init", "enc/utf8_util",
 ];
 
 export const brotli: Dependency = {

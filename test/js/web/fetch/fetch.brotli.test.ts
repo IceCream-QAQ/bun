@@ -53,3 +53,16 @@ test("fetch brotli response works", async () => {
   expect(firstText).toBe(secondText);
   expect(headers.get("Content-Encoding")).toBe("br");
 });
+
+test("fetch rejects a Brotli invalid block switch (CVE-2026-111497)", async () => {
+  const invalid = Buffer.from("200010414141fcffff07002228f00b60f7f41f000000", "hex");
+  using server = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response(invalid, { headers: { "Content-Encoding": "br" } });
+    },
+  });
+  await expect(fetch(server.url).then(response => response.arrayBuffer())).rejects.toThrow();
+  const raw = await fetch(server.url, { decompress: false });
+  expect(Buffer.from(await raw.arrayBuffer())).toEqual(invalid);
+});
