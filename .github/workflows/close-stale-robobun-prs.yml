@@ -6,6 +6,7 @@ on:
 
 jobs:
   close-stale-robobun-prs:
+    if: github.repository == 'oven-sh/bun'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

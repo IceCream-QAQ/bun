@@ -1,0 +1,144 @@
+name: Publish patched Bun to GHCR
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-patched-bun-ghcr
+  cancel-in-progress: false
+
+env:
+  SOURCE_REVISION: 59c898dd474149cbaa09274abea3b0d4a2d33e39
+  IMAGE: ghcr.io/icecream-qaq/bun
+
+jobs:
+  build:
+    if: github.repository == 'IceCream-QAQ/bun' && github.ref == 'refs/heads/bun-1.3.14-brotli-security'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        libc: [gnu, musl]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Checkout exact patched source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_REVISION }}
+          path: source
+          persist-credentials: false
+      - name: Build GNU executable from source
+        if: matrix.libc == 'gnu'
+        working-directory: source
+        run: bash ../dockerhub/ghcr/build-linux.sh gnu
+      - name: Build native musl executable from source
+        if: matrix.libc == 'musl'
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD:/workspace" -w /workspace/source alpine:3.23 \
+            sh -ec 'apk add --no-cache bash; bash ../dockerhub/ghcr/build-linux.sh musl'
+      - name: Package binary and source provenance
+        run: |
+          mkdir -p artifact
+          cp source/build/release/bun artifact/bun
+          chmod +x artifact/bun
+          printf '%s\n' "$SOURCE_REVISION" > artifact/source-revision.txt
+          sha256sum artifact/bun | tee artifact/SHA256SUMS
+          tar -czf bun-${{ matrix.libc }}.tar.gz -C artifact .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bun-${{ matrix.libc }}
+          path: bun-${{ matrix.libc }}.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: bun-*
+          path: artifacts
+          merge-multiple: true
+      - name: Extract source-built binaries
+        run: |
+          for libc in gnu musl; do
+            mkdir -p "bin/$libc"
+            tar -xzf "artifacts/bun-$libc.tar.gz" -C "bin/$libc"
+            test "$(cat "bin/$libc/source-revision.txt")" = "$SOURCE_REVISION"
+          done
+      - name: Build and verify all four upstream runtime variants before publishing
+        run: |
+          set -euo pipefail
+          for variant in debian debian-slim alpine distroless; do
+            libc=gnu
+            [ "$variant" != alpine ] || libc=musl
+            python3 dockerhub/ghcr/prepare-context.py "$variant" "bin/$libc/bun" "contexts/$variant"
+            docker build --platform linux/amd64 \
+              --label org.opencontainers.image.source=https://github.com/IceCream-QAQ/bun \
+              --label org.opencontainers.image.revision="$SOURCE_REVISION" \
+              --label org.opencontainers.image.version=1.3.14-brotli.1.2.1 \
+              --label 'org.opencontainers.image.description=Patched Bun 1.3.14 with Brotli 1.2.1; user-selected distribution tags 1.3.15 and 1.3' \
+              -t "patched-bun:$variant" "contexts/$variant"
+            test "$(docker image inspect "patched-bun:$variant" --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+            docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/bun \
+              -e EXPECT_LINUX_AMD64=1 -e EXPECT_REVISION="$SOURCE_REVISION" \
+              -v "$PWD/dockerhub/ghcr/verify-runtime.mjs:/verify-runtime.mjs:ro" \
+              "patched-bun:$variant" /verify-runtime.mjs | tee "verification-$variant.json"
+            # Check the exact executable inside each image, including shell-free distroless.
+            container=$(docker create "patched-bun:$variant")
+            docker cp "$container:/usr/local/bin/bun" "extracted-$variant"
+            docker rm "$container"
+            cmp "bin/$libc/bun" "extracted-$variant"
+          done
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Publish only explicitly requested version tags and 1.3 aliases
+        run: |
+          set -euo pipefail
+          : > image-digests.txt
+          for variant in debian debian-slim alpine distroless; do
+            reference_digest=''
+            case "$variant" in
+              debian) suffix='' ;;
+              debian-slim) suffix=-slim ;;
+              *) suffix="-$variant" ;;
+            esac
+            for version in 1.3.15 1.3; do
+              tag="$IMAGE:$version$suffix"
+              docker tag "patched-bun:$variant" "$tag"
+              docker push "$tag" | tee "push-$version$suffix.log"
+              docker pull "$tag"
+              digest=$(docker inspect "$tag" --format '{{index .RepoDigests 0}}')
+              if [ -n "$reference_digest" ]; then test "$digest" = "$reference_digest"; fi
+              reference_digest=$digest
+              printf '%s %s\n' "$tag" "$digest" | tee -a image-digests.txt "$GITHUB_STEP_SUMMARY"
+            done
+          done
+      - name: Save runtime verification records
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-verification
+          path: |
+            verification-*.json
+            push-*.log
+            image-digests.txt
+          retention-days: 30
+      - name: Log out
+        if: always()
+        run: docker logout ghcr.io

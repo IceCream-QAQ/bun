@@ -6,6 +6,7 @@ on:
 
 jobs:
   auto-close-duplicates:
+    if: github.repository == 'oven-sh/bun'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
