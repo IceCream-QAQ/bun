@@ -54,6 +54,7 @@ pub fn writeRequest(session: *ClientSession, stream: *Stream, qs: *quic.Stream) 
     if (qs.sendHeaders(headers.items, end_stream) != 0) {
         return error.HTTP3HeaderEncodingError;
     }
+    stream.headers_sent = true;
 
     if (has_inline_body) {
         stream.pending_body = body;

@@ -144,6 +144,7 @@ void us_quic_stream_flush(us_quic_stream_t *s);
 void us_quic_stream_shutdown_read(us_quic_stream_t *s);
 void us_quic_stream_close(us_quic_stream_t *s);
 void us_quic_stream_reset(us_quic_stream_t *s);
+void us_quic_stream_reset_internal_error(us_quic_stream_t *s);
 int us_quic_stream_has_unacked(us_quic_stream_t *s);
 
 void *us_quic_stream_ext(us_quic_stream_t *s);
@@ -157,9 +158,13 @@ void us_quic_loop_process(struct us_loop_t *loop);
 /* Flush only if a stream wrote since the last process_conns. */
 void us_quic_loop_flush_if_pending(struct us_loop_t *loop);
 
+#define US_QUIC_MAX_REQUEST_FIELDS 200
+
 /* Incoming headers — valid from on_stream_headers until on_stream_close. */
 unsigned int us_quic_stream_header_count(us_quic_stream_t *s);
 const struct us_quic_header_t *us_quic_stream_header(us_quic_stream_t *s, unsigned int i);
+/* The header set exceeds the size or field count this endpoint accepts and is incomplete. */
+int us_quic_stream_headers_too_large(us_quic_stream_t *s);
 
 /* Connection accessors */
 void *us_quic_socket_ext(us_quic_socket_t *s);

@@ -14,6 +14,11 @@ pub const Stream = opaque {
     extern fn us_quic_stream_reset(s: *Stream) void;
     pub const reset = us_quic_stream_reset;
 
+    extern fn us_quic_stream_headers_too_large(s: *Stream) c_int;
+    pub fn headersTooLarge(s: *Stream) bool {
+        return us_quic_stream_headers_too_large(s) != 0;
+    }
+
     extern fn us_quic_stream_header_count(s: *Stream) c_uint;
     pub const headerCount = us_quic_stream_header_count;
 

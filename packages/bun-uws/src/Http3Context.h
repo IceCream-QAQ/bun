@@ -28,6 +28,11 @@ struct Http3Context {
             Http3ResponseData *rd = res->getHttpResponseData();
             rd->reset();
 
+            if (us_quic_stream_headers_too_large(s)) {
+                res->writeStatus("431 Request Header Fields Too Large")->end();
+                return;
+            }
+
             Http3Request req(s);
             if (req.getHeader("expect") == "100-continue") res->writeContinue();
             cd->router.getUserData() = {res, &req};

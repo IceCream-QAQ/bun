@@ -24,6 +24,7 @@ pending_body: []const u8 = "",
 request_body_done: bool = false,
 is_streaming_body: bool = false,
 headers_delivered: bool = false,
+headers_sent: bool = false,
 
 pub fn deinit(this: *Stream) void {
     this.decoded_headers.deinit(bun.default_allocator);
@@ -33,7 +34,7 @@ pub fn deinit(this: *Stream) void {
 }
 
 pub fn abort(this: *Stream) void {
-    if (this.qstream) |qs| qs.close();
+    if (this.qstream) |qs| qs.reset();
 }
 
 const ClientSession = @import("./ClientSession.zig");

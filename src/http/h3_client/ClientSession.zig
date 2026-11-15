@@ -106,14 +106,16 @@ pub fn fail(this: *ClientSession, stream: *Stream, err: anyerror) void {
 }
 
 /// A stream closed before any response headers arrived. If the request
-/// hasn't been retried yet and the body wasn't a JS stream (which may
-/// already be consumed), re-enqueue it on a fresh session — this is the
+/// hasn't been retried yet, the body wasn't a JS stream (which may already
+/// be consumed), and replay is safe, re-enqueue it on a fresh session — this is the
 /// standard h2/h3 client behavior for the GOAWAY / stateless-reset /
 /// port-reuse race where a pooled session goes stale between the
 /// `matches()` check and the first stream open.
 pub fn retryOrFail(this: *ClientSession, stream: *Stream, err: anyerror) void {
     const client = stream.client orelse return this.fail(stream, err);
-    if (client.flags.h3_retried or stream.is_streaming_body) {
+    // RFC 9110 section 9.2.2: the origin may have acted on a written request.
+    const replay_safe = !stream.headers_sent or client.method.isIdempotent();
+    if (client.flags.h3_retried or stream.is_streaming_body or !replay_safe) {
         return this.fail(stream, err);
     }
     const ctx = ClientContext.get() orelse return this.fail(stream, err);

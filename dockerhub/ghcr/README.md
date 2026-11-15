@@ -1,34 +1,25 @@
-# Patched Bun GHCR images
+# Custom Bun 1.3.16 images
 
-The manually dispatched `publish-patched-ghcr.yml` workflow builds Linux amd64
-executables from commit `59c898dd474149cbaa09274abea3b0d4a2d33e39`.
-The source version is **Bun 1.3.14**, with Brotli 1.2.1 and the invalid block-switch
-fix. The user-selected `1.3.15` and `1.3` distribution tags do **not** claim this
-is upstream Bun 1.3.15. Runtime version and OCI labels preserve the actual version.
+This is a **custom security-patched build based on Bun 1.3.14**, not the complete
+upstream Bun 1.3.16 release. The runtime reports 1.3.16 as requested by the owner.
+It retains Brotli 1.2.1 and backports the HTTP/3 QPACK decoded-header limits from
+upstream PR #46392 (GHSA-cf8x-9m69-3gg3), adapted to the Zig runtime.
 
-Published tags under `ghcr.io/icecream-qaq/bun`:
+`publish-patched-ghcr.yml` is manually dispatched on `bun-1.3.14-brotli-security`.
+Both libc builds check out the exact workflow commit (`github.sha`), never a
+moving branch. GNU and musl source builds produce linux/amd64 baseline executables.
+The upstream Debian, slim, Alpine and distroless runtime layouts are retained.
 
-- `1.3.15`, `1.3`: Debian
-- `1.3.15-slim`, `1.3-slim`: Debian slim
-- `1.3.15-alpine`, `1.3-alpine`: Alpine/musl
-- `1.3.15-distroless`, `1.3-distroless`: Distroless
+Publication writes only `1.3.16`, `1.3.16-slim`, `1.3.16-alpine`,
+`1.3.16-distroless` and the matching `1.3` aliases. Existing `1.3.15` tags are not
+changed and no `latest` tag is created. All images remain publicly pullable.
 
-No `latest`, major-only, or unrelated tags are updated. Each `1.3` alias is
-checked against its corresponding `1.3.15` digest after publication.
+Before publishing any variant, all four images must pass version/revision,
+architecture, executable identity and Brotli regression checks, plus HTTP/3
+request size/count limits, response size limits, unrelated in-flight request
+survival, POST/PATCH non-replay and recovery. The HTTP/3 check is loopback-only
+inside a network-isolated, CPU/memory-limited container. The public TLS fixture
+comes from the repository test harness, not from any deployment.
 
-The workflow compiles GNU and native musl executables separately with the
-repository's release profile, baseline CPU target, and LTO disabled. Official
-Bun is used only to bootstrap the build scripts; it is never packaged. The
-build uses the repository's normal pinned dependency archives and prebuilt
-WebKit library. It does not rebuild WebKit from source.
-
-`prepare-context.py` preserves each upstream Dockerfile's runtime stage and
-entrypoint, replacing only the download stage with the compiled executable.
-All four images must pass the invalid Brotli block-switch checks (sync, async,
-byte-wise stream, DecompressionStream, fetch), valid decompression, exact source
-revision, Linux/x64 architecture, and byte-for-byte executable checks before
-any image is published. Distroless tests invoke Bun directly and need no shell.
-
-The workflow needs only `contents: read`; its publication job additionally
-requests `packages: write`. Image visibility is managed separately in GitHub.
-Workflow artifacts retain runtime checks and tag/digest records.
+The workflow uses `contents: read` and grants `packages: write` only to its
+publication job. Runtime results and tag/digest records are retained as artifacts.

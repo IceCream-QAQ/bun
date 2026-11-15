@@ -85,6 +85,10 @@ fn onStreamOpen(s: *quic.Stream, is_client: c_int) callconv(.c) void {
 
 fn onStreamHeaders(s: *quic.Stream) callconv(.c) void {
     const stream = s.ext(Stream).* orelse return;
+    if (s.headersTooLarge()) {
+        stream.session.fail(stream, error.ResponseHeadersTooLarge);
+        return;
+    }
     const n = s.headerCount();
 
     stream.decoded_headers.clearRetainingCapacity();

@@ -19,7 +19,9 @@ const error = await decoded;
 assert.equal(error.code, expected.code);
 assert.equal(error.errno, expected.errno);
 decoder.destroy();
-await assert.rejects(new Response(new Blob([invalid]).stream().pipeThrough(new DecompressionStream("brotli"))).arrayBuffer());
+await assert.rejects(
+  new Response(new Blob([invalid]).stream().pipeThrough(new DecompressionStream("brotli"))).arrayBuffer(),
+);
 const server = Bun.serve({ port: 0, fetch: () => new Response(invalid, { headers: { "Content-Encoding": "br" } }) });
 try {
   await assert.rejects(fetch(server.url).then(response => response.arrayBuffer()));
@@ -34,5 +36,15 @@ if (process.env.EXPECT_LINUX_AMD64) {
   assert.equal(process.arch, "x64");
 }
 if (process.env.EXPECT_REVISION) assert.equal(Bun.revision, process.env.EXPECT_REVISION);
-assert.equal(Bun.version.split("-")[0], "1.3.14");
-console.log(JSON.stringify({ version: Bun.version, revision: Bun.revision, platform: process.platform, arch: process.arch, brotli: process.versions.brotli, regression: "PASS: sync, async, byte-stream, DecompressionStream, fetch, valid roundtrip" }));
+assert.equal(Bun.version.split("-")[0], "1.3.16");
+assert.equal(process.versions.bun, "1.3.16");
+console.log(
+  JSON.stringify({
+    version: Bun.version,
+    revision: Bun.revision,
+    platform: process.platform,
+    arch: process.arch,
+    brotli: process.versions.brotli,
+    regression: "PASS: sync, async, byte-stream, DecompressionStream, fetch, valid roundtrip",
+  }),
+);

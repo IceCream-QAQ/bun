@@ -28,7 +28,11 @@ extern SSL_CTX *us_ssl_ctx_build_raw(
     enum create_bun_socket_error_t *err);
 extern X509_STORE *us_get_default_ca_store(void);
 
+extern size_t BUN_DEFAULT_MAX_HTTP_HEADER_SIZE;
+
 #define US_QUIC_READ_BUF (16 * 1024)
+#define US_QUIC_HSET_HARD_CAP_FACTOR 2
+#define US_QUIC_HSET_HARD_CAP_FLOOR (16 * 1024)
 
 /* Incoming header set: contiguous storage + index. Created before the
  * stream object exists (lsquic decodes headers ahead of on_new_stream),
@@ -39,6 +43,10 @@ struct us_quic_hset {
     struct lsxpack_header scratch;
     struct us_quic_header_t *headers;
     unsigned int count, hcap;
+    /* RFC 9114 section 4.2.2: decoded name + value + 32 per field. */
+    size_t size, max_size;
+    size_t fields, max_fields;
+    int too_large;
 };
 
 struct us_quic_sni {
@@ -56,6 +64,8 @@ struct us_quic_socket_context_s {
     int processing;
     int closing;
     int is_client;
+    /* lsquic advertises the limit but does not enforce it. */
+    unsigned int max_header_set_size;
     unsigned int conn_count;
     unsigned int conn_ext_size;
     /* Stream bytes written since the last process_conns. Once this exceeds
@@ -400,31 +410,43 @@ static int us_quic_alpn_select(SSL *ssl, const unsigned char **out, unsigned cha
 
 /* ───── header-set interface ───── */
 
+static size_t us_quic_hset_hard_cap(const struct us_quic_hset *h) {
+    size_t cap = US_QUIC_HSET_HARD_CAP_FACTOR * h->max_size;
+    return cap > US_QUIC_HSET_HARD_CAP_FLOOR ? cap : US_QUIC_HSET_HARD_CAP_FLOOR;
+}
+
 static void *us_quic_hsi_create(void *hsi_ctx, lsquic_stream_t *s, int is_push) {
-    (void) hsi_ctx; (void) s; (void) is_push;
-    return calloc(1, sizeof(struct us_quic_hset));
+    (void) s; (void) is_push;
+    struct us_quic_hset *h = (struct us_quic_hset *) calloc(1, sizeof(struct us_quic_hset));
+    if (!h) return NULL;
+    h->max_size = ((us_quic_socket_context_t *) hsi_ctx)->max_header_set_size;
+    /* Only max_size bounds the fields of a response, as in the HTTP/2 client. */
+    h->max_fields = !((us_quic_socket_context_t *) hsi_ctx)->is_client ? US_QUIC_MAX_REQUEST_FIELDS : h->max_size;
+    return h;
 }
 
 static struct lsxpack_header *us_quic_hsi_prepare(void *hset_p, struct lsxpack_header *hdr, size_t space) {
     struct us_quic_hset *h = (struct us_quic_hset *) hset_p;
-    if (space > 64 * 1024) return NULL;
-    unsigned int need = h->len + (unsigned int) space;
+    /* `space` is lsqpack's estimate and can exceed what the field decodes to. */
+    size_t need = h->len + space;
+    if (space > LSXPACK_MAX_STRLEN || need > us_quic_hset_hard_cap(h)) return NULL;
     if (need > h->cap) {
-        unsigned int ncap = h->cap ? h->cap : 512;
+        size_t ncap = h->cap ? h->cap : 512;
         while (ncap < need) ncap *= 2;
         char *nb = (char *) realloc(h->buf, ncap);
         if (!nb) return NULL;
         h->buf = nb;
-        h->cap = ncap;
+        h->cap = (unsigned int) ncap;
     }
     if (hdr == NULL) {
         hdr = &h->scratch;
-        lsxpack_header_prepare_decode(hdr, h->buf, h->len, space);
+        /* Offsets count from this field's start: lsxpack asserts that they fit lsxpack_strlen_t. */
+        lsxpack_header_prepare_decode(hdr, h->buf + h->len, 0, space);
     } else {
         /* Resize: lsqpack already wrote part of name/value into the previous
          * buffer; only the storage may move. Preserve offsets, repoint buf,
          * and report the larger window via val_len. */
-        hdr->buf = h->buf;
+        hdr->buf = h->buf + h->len;
         hdr->val_len = (lsxpack_strlen_t) space;
     }
     return hdr;
@@ -433,6 +455,15 @@ static struct lsxpack_header *us_quic_hsi_prepare(void *hset_p, struct lsxpack_h
 static int us_quic_hsi_process(void *hset_p, struct lsxpack_header *hdr) {
     struct us_quic_hset *h = (struct us_quic_hset *) hset_p;
     if (hdr == NULL) return 0; /* end of headers */
+    h->size += (size_t) hdr->name_len + hdr->val_len + 32;
+    h->fields++;
+    if (h->size > h->max_size || h->fields > h->max_fields) {
+        /* Drop the field but let lsqpack finish the block, so that it still
+         * acknowledges the block and the connection stays usable. */
+        h->too_large = 1;
+        return h->size > us_quic_hset_hard_cap(h) ||
+            h->fields > US_QUIC_HSET_HARD_CAP_FACTOR * h->max_fields ? -1 : 0;
+    }
     if (h->count == h->hcap) {
         unsigned int ncap = h->hcap ? h->hcap * 2 : 16;
         struct us_quic_header_t *nh = (struct us_quic_header_t *)
@@ -444,13 +475,13 @@ static int us_quic_hsi_process(void *hset_p, struct lsxpack_header *hdr) {
     /* lsxpack wrote name+value into h->buf at h->len; record offsets, then
      * advance len so the next header lands after this one. We store offsets
      * (cast to pointer-sized) and resolve them after the buffer stops moving. */
-    h->headers[h->count].name = (const char *)(uintptr_t) hdr->name_offset;
+    h->headers[h->count].name = (const char *)(uintptr_t) (h->len + hdr->name_offset);
     h->headers[h->count].name_len = hdr->name_len;
-    h->headers[h->count].value = (const char *)(uintptr_t) hdr->val_offset;
+    h->headers[h->count].value = (const char *)(uintptr_t) (h->len + hdr->val_offset);
     h->headers[h->count].value_len = hdr->val_len;
     h->headers[h->count].qpack_index = -1;
     h->count++;
-    h->len = (unsigned int) hdr->val_offset + hdr->val_len + hdr->dec_overhead;
+    h->len += (unsigned int) hdr->val_offset + hdr->val_len + hdr->dec_overhead;
     return 0;
 }
 
@@ -682,10 +713,10 @@ us_quic_socket_context_t *us_create_quic_socket_context(
     lsquic_engine_init_settings(&ctx->settings, LSENG_HTTP_SERVER);
     ctx->settings.es_versions = LSQUIC_DF_VERSIONS & LSQUIC_IETF_VERSIONS;
     ctx->settings.es_ecn = 0;
-    /* QPACK can expand small dynamic-table refs into large header lists; cap
-     * the post-decode size at the same order as uWS H1's MAX_FALLBACK_SIZE so
-     * a single request can't run hsi_prepare to OOM. */
-    ctx->settings.es_max_header_list_size = 16 * 1024;
+    /* Same value as Http2Context::maxHeaderListSize. */
+    size_t max_header_size = BUN_DEFAULT_MAX_HTTP_HEADER_SIZE ? BUN_DEFAULT_MAX_HTTP_HEADER_SIZE : 64 * 1024;
+    ctx->max_header_set_size = max_header_size > 0xffffff ? 0xffffff : (unsigned) max_header_size;
+    ctx->settings.es_max_header_list_size = ctx->max_header_set_size;
     ctx->settings.es_init_max_streams_bidi = 100;
     /* Static-table-only response encoding: skips the per-header dynamic
      * table search (lsqpack_enc_encode + XXH32 + header_out_dynamic_entry
@@ -943,8 +974,10 @@ int us_quic_stream_send_headers(us_quic_stream_t *s,
      * so each pair has to be contiguous. The caller hands us arbitrary
      * pointers, so flatten here. */
     size_t total = 0;
-    for (unsigned int i = 0; i < count; i++)
+    for (unsigned int i = 0; i < count; i++) {
+        if (headers[i].name_len > LSXPACK_MAX_STRLEN || headers[i].value_len > LSXPACK_MAX_STRLEN) return -1;
         total += headers[i].name_len + headers[i].value_len;
+    }
 
     char stackbuf[1024];
     char *buf = total <= sizeof(stackbuf) ? stackbuf : (char *) malloc(total);
@@ -962,8 +995,8 @@ int us_quic_stream_send_headers(us_quic_stream_t *s,
         const struct us_quic_header_t *h = &headers[i];
         memcpy(buf + off, h->name, h->name_len);
         memcpy(buf + off + h->name_len, h->value, h->value_len);
-        lsxpack_header_set_offset2(&xh[i], buf, off, h->name_len,
-            off + h->name_len, h->value_len);
+        lsxpack_header_set_offset2(&xh[i], buf + off, 0, h->name_len,
+            h->name_len, h->value_len);
         if (h->qpack_index >= 0) {
             xh[i].qpack_index = (uint8_t) h->qpack_index;
             xh[i].flags = LSXPACK_QPACK_IDX;
@@ -1013,8 +1046,18 @@ void lsquic_stream_maybe_reset(struct lsquic_stream *, uint64_t error_code, int)
  * CONNECTION_CLOSE on the mismatch (RFC 9114 §4.1.2). RESET_STREAM is
  * the wire-level "I'm cancelling this send" and lets the server treat it
  * as a stream-level cancellation rather than a malformed message. */
+static void us_quic_stream_reset_with(us_quic_stream_t *s, uint64_t error_code) {
+    if (!s->stream) return;
+    lsquic_stream_maybe_reset(s->stream, error_code, 0);
+    lsquic_stream_close(s->stream);
+}
+
 void us_quic_stream_reset(us_quic_stream_t *s) {
-    if (s->stream) lsquic_stream_maybe_reset(s->stream, 0x10C, 1);
+    us_quic_stream_reset_with(s, 0x10C);
+}
+
+void us_quic_stream_reset_internal_error(us_quic_stream_t *s) {
+    us_quic_stream_reset_with(s, 0x102);
 }
 
 int us_quic_stream_has_unacked(us_quic_stream_t *s) {
@@ -1037,6 +1080,10 @@ unsigned int us_quic_stream_header_count(us_quic_stream_t *s) {
 
 const struct us_quic_header_t *us_quic_stream_header(us_quic_stream_t *s, unsigned int i) {
     return s->hset && i < s->hset->count ? &s->hset->headers[i] : NULL;
+}
+
+int us_quic_stream_headers_too_large(us_quic_stream_t *s) {
+    return s->hset && s->hset->too_large;
 }
 
 void *us_quic_socket_ext(us_quic_socket_t *s) { return s + 1; }
@@ -1136,7 +1183,10 @@ us_quic_socket_context_t *us_create_quic_client_context(
     lsquic_engine_init_settings(&ctx->settings, LSENG_HTTP);
     ctx->settings.es_versions = (1u << LSQVER_I001);
     ctx->settings.es_ecn = 0;
+    /* Advertise the size a single lsxpack field can hold. */
     ctx->settings.es_max_header_list_size = 64 * 1024;
+    /* Match the HTTP/2 client if the peer ignores the advertised size. */
+    ctx->max_header_set_size = 256 * 1024;
     ctx->settings.es_ext_http_prio = 0;
 
     struct lsquic_engine_api api;

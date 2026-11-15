@@ -648,3 +648,93 @@ describe("Alt-Svc upgrade (--experimental-http3-fetch)", () => {
     expect(exitCode).toBe(0);
   });
 });
+
+test("a response header set over the size limit fails that request and no other on the connection", async () => {
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let heldRequests = 0;
+  await using origin = Bun.serve({
+    port: 0,
+    tls,
+    http3: true,
+    http1: false,
+    async fetch(req) {
+      const { pathname } = new URL(req.url);
+      if (pathname === "/held") {
+        heldRequests++;
+        held.resolve();
+        await release.promise;
+        return new Response("held");
+      }
+      const headers = new Headers();
+      for (const cookie of cookiesOfSize(Number(pathname.slice(1)))) headers.append("set-cookie", cookie);
+      return new Response(null, { headers });
+    },
+  });
+  // RFC 9114 section 4.2.2 counts the name, the value and 32 more bytes for each field.
+  const sizeOf = (name: string, value: string) => name.length + value.length + 32;
+  // Nonempty cookies (the 1.3.14 Headers implementation drops empty values),
+  // and a last one that takes the remainder.
+  function cookiesOfSize(size: number) {
+    const count = Math.floor(size / sizeOf("set-cookie", "v"));
+    const cookies: string[] = Array(count).fill("v");
+    if (count > 0) cookies[count - 1] += Buffer.alloc(size % sizeOf("set-cookie", "v"), "v").toString();
+    return cookies;
+  }
+
+  const other = fetch(`${origin.url}held`, h3);
+  await held.promise;
+  // What a response carries besides the cookies.
+  const rest = [...(await fetch(`${origin.url}0`, h3)).headers].reduce(
+    (size, [name, value]) => size + sizeOf(name, value),
+    sizeOf(":status", "200"),
+  );
+  const atTheLimit = 256 * 1024 - rest;
+  const served = await fetch(`${origin.url}${atTheLimit}`, h3);
+  expect(served.headers.getSetCookie()).toEqual(cookiesOfSize(atTheLimit));
+  const refused = await fetch(`${origin.url}${atTheLimit + 1}`, h3).then(
+    res => res.status,
+    err => err.code,
+  );
+  expect(refused).toBe("ResponseHeadersTooLarge");
+  release.resolve();
+  expect(await (await other).text()).toBe("held");
+  // A closed connection would have sent it again on a new one.
+  expect(heldRequests).toBe(1);
+});
+
+test("rejects a request header value that is too long to send", async () => {
+  // lsxpack holds the length of a value in 16 bits.
+  const outcome = await fetch(`${base}/headers-echo`, {
+    ...h3,
+    headers: { "x-value": Buffer.alloc(70_000, "v").toString() },
+  }).then(
+    res => res.status,
+    err => err.code,
+  );
+  expect(outcome).toBe("HTTP3HeaderEncodingError");
+  expect(await fetch(`${base}/hello`, h3).then(res => res.text())).toBe("hello over h3");
+});
+
+test("HTTP/3 failed response does not replay a written POST or PATCH", async () => {
+  let requests = 0;
+  await using origin = Bun.serve({
+    port: 0,
+    tls,
+    http3: true,
+    http1: false,
+    fetch() {
+      requests++;
+      return new Response(null, { headers: { "x-too-long": "v".repeat(70_000) } });
+    },
+  });
+  for (const method of ["POST", "PATCH"]) {
+    const before = requests;
+    const outcome = await fetch(origin.url, { ...h3, method, body: "must not replay" }).then(
+      res => res.status,
+      err => err.code,
+    );
+    expect(outcome).toBe("HTTP3StreamReset");
+    expect(requests - before).toBe(1);
+  }
+});
