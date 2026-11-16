@@ -14,6 +14,20 @@ export const escapePowershell = (code: string) => fmtBinding(code, "escape-power
 
 export const canonicalizeIP = $newCppFunction("NodeTLS.cpp", "Bun__canonicalizeIP", 1);
 
+// Test-only additions to the process-wide SHA-256 SPKI denylist. Change it only
+// when no handshake is running; production entries cannot be removed.
+export const addBlockedSPKIForTesting: (hash: ArrayBufferView) => void = $newCppFunction(
+  "NodeTLS.cpp",
+  "addBlockedSPKIForTesting",
+  1,
+);
+export const clearBlockedSPKIsForTesting: () => void = $newCppFunction("NodeTLS.cpp", "clearBlockedSPKIsForTesting", 0);
+export const certificateBlockedErrorForTesting: (pem: string) => number = $newCppFunction(
+  "NodeTLS.cpp",
+  "certificateBlockedErrorForTesting",
+  1,
+);
+
 export const SQL = $cpp("JSSQLStatement.cpp", "createJSSQLStatementConstructor");
 
 export const patchInternals = {
@@ -174,7 +188,11 @@ export const isOperatingSystemMatch: (operatingSystem: string[]) => boolean = $n
   1,
 );
 
-export const createSocketPair: () => [number, number] = $newZigFunction("runtime/socket/socket.zig", "jsCreateSocketPair", 0);
+export const createSocketPair: () => [number, number] = $newZigFunction(
+  "runtime/socket/socket.zig",
+  "jsCreateSocketPair",
+  0,
+);
 
 export const isModuleResolveFilenameSlowPathEnabled: () => boolean = $newCppFunction(
   "NodeModuleModule.cpp",
@@ -230,7 +248,11 @@ interface setSocketOptionsFn {
   (socket: Bun.Socket, recvBuffer: 2, size: number): void;
 }
 
-export const setSocketOptions: setSocketOptionsFn = $newZigFunction("runtime/socket/socket.zig", "jsSetSocketOptions", 3);
+export const setSocketOptions: setSocketOptionsFn = $newZigFunction(
+  "runtime/socket/socket.zig",
+  "jsSetSocketOptions",
+  3,
+);
 type SerializationContext = "worker" | "window" | "postMessage" | "default";
 export const structuredCloneAdvanced: (
   value: any,
@@ -305,3 +327,14 @@ export const fetchH3Internals = {
 export const fileSinkInternals = {
   liveCount: $newZigFunction("runtime/webcore/FileSink.zig", "TestingAPIs.fileSinkLiveCount", 0) as () => number,
 };
+
+export const addBlockedCertificateForTesting: (hash: ArrayBufferView) => void = $newCppFunction(
+  "NodeTLS.cpp",
+  "addBlockedCertificateForTesting",
+  1,
+);
+export const clearBlockedCertificatesForTesting: () => void = $newCppFunction(
+  "NodeTLS.cpp",
+  "clearBlockedCertificatesForTesting",
+  0,
+);

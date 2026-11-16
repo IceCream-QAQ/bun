@@ -36,8 +36,8 @@ if (process.env.EXPECT_LINUX_AMD64) {
   assert.equal(process.arch, "x64");
 }
 if (process.env.EXPECT_REVISION) assert.equal(Bun.revision, process.env.EXPECT_REVISION);
-assert.equal(Bun.version.split("-")[0], "1.3.16");
-assert.equal(process.versions.bun, "1.3.16");
+assert.equal(Bun.version.split("-")[0], "1.3.17");
+assert.equal(process.versions.bun, "1.3.17");
 console.log(
   JSON.stringify({
     version: Bun.version,

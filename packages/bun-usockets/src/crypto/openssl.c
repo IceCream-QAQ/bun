@@ -434,6 +434,20 @@ static int us_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
   return 1;
 }
 
+/* Preserve the deferred JS authorization policy (including rejectUnauthorized:false),
+ * but record a revoked chain even when its trust anchor was explicitly supplied.
+ * X509_verify_cert invokes the normal per-certificate callback first. */
+static int us_verify_chain_with_blocklist(X509_STORE_CTX *ctx, void *arg) {
+  (void)arg;
+  int ok = X509_verify_cert(ctx);
+  int error = us_x509_store_ctx_blocked_key_error(ctx);
+  if (error == X509_V_OK) return ok;
+  X509_STORE_CTX_set_error(ctx, error);
+  SSL *ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+  int (*callback)(int, X509_STORE_CTX *) = ssl ? SSL_get_verify_callback(ssl) : NULL;
+  return callback ? callback(0, ctx) : 0;
+}
+
 /* Drop the strdup'd passphrase. Called as soon as private-key load completes
  * (the only consumer of the passwd_cb), so the secret never outlives ctx
  * construction and SSL_CTX_free() is sufficient on every later path. Also
@@ -460,6 +474,7 @@ SSL_CTX *us_ssl_ctx_build_raw(struct us_bun_socket_context_options_t options,
   ERR_clear_error();
 
   SSL_CTX *ssl_context = SSL_CTX_new(TLS_method());
+  SSL_CTX_set_cert_verify_callback(ssl_context, us_verify_chain_with_blocklist, NULL);
   atomic_fetch_add(&ssl_ctx_live, 1);
   /* Register the live-count free_func first thing so every exit (including
    * build_fail) balances. The packed reneg policy reuses the same slot. */

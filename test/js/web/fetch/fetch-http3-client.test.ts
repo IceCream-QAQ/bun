@@ -738,3 +738,35 @@ test("HTTP/3 failed response does not replay a written POST or PATCH", async () 
     expect(requests - before).toBe(1);
   }
 });
+
+test("trusted HTTP/3 certificate with a blocked public key or revoked DER fails the handshake", async () => {
+  using dir = tempDir("h3-blocked-key", { "ca.pem": tls.cert });
+  const script = `
+    import { addBlockedSPKIForTesting, addBlockedCertificateForTesting } from "bun:internal-for-testing";
+    import { createHash, X509Certificate } from "node:crypto";
+    import { readFileSync } from "node:fs";
+    if (process.env.H3_BLOCK_MODE) {
+      const cert = new X509Certificate(readFileSync(process.env.NODE_EXTRA_CA_CERTS));
+      if (process.env.H3_BLOCK_MODE === "spki")
+        addBlockedSPKIForTesting(createHash("sha256").update(cert.publicKey.export({ type: "spki", format: "der" })).digest());
+      else addBlockedCertificateForTesting(createHash("sha256").update(cert.raw).digest());
+    }
+    console.log(await fetch(process.env.H3_URL, { protocol: "http3", signal: AbortSignal.timeout(5000) }).then(res => res.text(), err => err.code));
+  `;
+  // Sequential subprocesses avoid mutating a global test list during a handshake.
+  async function run(mode: "" | "spki" | "der") {
+    await using proc = Bun.spawn({
+      cmd: [bunExe(), "-e", script],
+      env: { ...bunEnv, NODE_EXTRA_CA_CERTS: String(dir) + "/ca.pem", H3_URL: `${base}/hello`, H3_BLOCK_MODE: mode },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    return stdout.trim();
+  }
+  expect(await run("")).toBe("hello over h3");
+  expect(await run("spki")).toBe("HTTP3HandshakeFailed");
+  expect(await run("der")).toBe("HTTP3HandshakeFailed");
+}, 30_000);

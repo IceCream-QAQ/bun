@@ -1,4 +1,5 @@
 #include "quic.h"
+#include "crypto/root_certs_header.h"
 
 #include "internal/internal.h"
 #if defined(_WIN32) && !defined(WIN32)
@@ -1142,6 +1143,12 @@ static enum ssl_verify_result_t us_quic_client_verify(SSL *ssl, uint8_t *out_ale
     if (X509_STORE_CTX_init(vctx, store, leaf, chain) == 1) {
         X509_STORE_CTX_set_default(vctx, "ssl_server");
         ok = X509_verify_cert(vctx) == 1;
+        /* custom_verify bypasses the TCP SSL_CTX verification callback. */
+        int blocked = us_x509_store_ctx_blocked_key_error(vctx);
+        if (blocked != X509_V_OK) {
+            X509_STORE_CTX_set_error(vctx, blocked);
+            ok = 0;
+        }
     }
     X509_STORE_CTX_free(vctx);
     if (!ok) return ssl_verify_invalid;

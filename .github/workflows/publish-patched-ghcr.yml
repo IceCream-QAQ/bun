@@ -36,6 +36,18 @@ jobs:
         if: matrix.libc == 'gnu'
         working-directory: source
         run: bash ../dockerhub/ghcr/build-linux.sh gnu
+      - name: Verify source-built GNU release TLS and HTTP3 regressions
+        if: matrix.libc == 'gnu'
+        working-directory: source
+        env:
+          BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING: "1"
+          BUN_GARBAGE_COLLECTOR_LEVEL: "0"
+        run: |
+          timeout 600 ./build/release/bun test --timeout 30000 \
+            ./test/js/node/tls/node-tls-internals.test.ts \
+            ./test/js/node/tls/node-tls-cert.test.ts \
+            ./test/js/web/fetch/fetch-http3-client.test.ts \
+            ./test/js/bun/http/serve-http3.test.ts
       - name: Build native musl executable from source
         if: matrix.libc == 'musl'
         run: |
@@ -89,8 +101,8 @@ jobs:
             docker build --platform linux/amd64 \
               --label org.opencontainers.image.source=https://github.com/IceCream-QAQ/bun \
               --label org.opencontainers.image.revision="$SOURCE_REVISION" \
-              --label org.opencontainers.image.version=1.3.16 \
-              --label 'org.opencontainers.image.description=Custom Bun 1.3.16 based on 1.3.14 with Brotli 1.2.1 and HTTP/3 QPACK header-limit security backports' \
+              --label org.opencontainers.image.version=1.3.17 \
+              --label 'org.opencontainers.image.description=Custom Bun 1.3.17 based on 1.3.14 with Brotli 1.2.1, HTTP/3 QPACK limits and emSign TLS distrust backports' \
               -t "patched-bun:$variant" "contexts/$variant"
             test "$(docker image inspect "patched-bun:$variant" --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
             docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/bun \
@@ -104,6 +116,16 @@ jobs:
               -v "$PWD/dockerhub/ghcr/verify-http3.mjs:/verify-http3.mjs:ro" \
               -v "$PWD/test/harness.ts:/harness.ts:ro" \
               "patched-bun:$variant" /verify-http3.mjs | tee "verification-http3-$variant.json"
+            trap - EXIT
+            verify_container="verify-tls-$GITHUB_RUN_ID-$variant"
+            trap 'docker rm -f "$verify_container" >/dev/null 2>&1 || true' EXIT
+            timeout 120 docker run --rm --name "$verify_container" --platform linux/amd64 --network none --memory 1g --cpus 2 \
+              --entrypoint /usr/local/bin/bun \
+              -e BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING=1 -e BUN_GARBAGE_COLLECTOR_LEVEL=0 \
+              -v "$PWD/dockerhub/ghcr/verify-tls.mjs:/verify-tls.mjs:ro" \
+              -v "$PWD/test/js/node/tls/fixtures/emsign:/emsign:ro" \
+              -v "$PWD/test/harness.ts:/harness.ts:ro" \
+              "patched-bun:$variant" /verify-tls.mjs | tee "verification-tls-$variant.json"
             trap - EXIT
             # Check the exact executable inside each image, including shell-free distroless.
             container=$(docker create "patched-bun:$variant")
@@ -126,7 +148,7 @@ jobs:
               debian-slim) suffix=-slim ;;
               *) suffix="-$variant" ;;
             esac
-            for version in 1.3.16 1.3; do
+            for version in 1.3.17 1.3; do
               tag="$IMAGE:$version$suffix"
               docker tag "patched-bun:$variant" "$tag"
               docker push "$tag" | tee "push-$version$suffix.log"
